@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { ShoppingBag, Building2, Layers, AlertCircle } from 'lucide-react';
+import Link from 'next/link';
+import { ShoppingBag, Building2, Layers, AlertCircle, Clock } from 'lucide-react';
 
 interface Warehouse {
   id: string;
@@ -27,16 +28,34 @@ interface Product {
   stockLevels: Stock[];
 }
 
+interface ActiveHold {
+  id: string;
+  productId: string;
+  warehouseId: string;
+  quantity: number;
+  status: 'PENDING' | 'CONFIRMED' | 'RELEASED';
+  expiresAt: string;
+  product: {
+    name: string;
+    sku: string;
+  };
+  warehouse: {
+    name: string;
+  };
+  timeLeft?: number; // seconds
+}
+
 export default function Home() {
   const router = useRouter();
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [reservingKey, setReservingKey] = useState<string | null>(null); // productId_warehouseId
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [activeHolds, setActiveHolds] = useState<ActiveHold[]>([]);
 
-  const fetchProducts = async () => {
+  const fetchProducts = async (isSilent = false) => {
     try {
-      setLoading(true);
+      if (!isSilent) setLoading(true);
       const res = await fetch('/api/products');
       if (!res.ok) throw new Error('Failed to load products');
       const data = await res.json();
@@ -48,8 +67,88 @@ export default function Home() {
     }
   };
 
+  // Sync local holds from localStorage safely
+  const syncHolds = async () => {
+    const storedIdsRaw = localStorage.getItem('allo_reservations');
+    if (!storedIdsRaw) return;
+
+    try {
+      const ids: string[] = JSON.parse(storedIdsRaw);
+      const holdsDetails: ActiveHold[] = [];
+      const validIds: string[] = [];
+
+      await Promise.all(
+        ids.map(async (id) => {
+          try {
+            const res = await fetch(`/api/reservations/${id}`);
+            if (res.status === 200) {
+              const hold: ActiveHold = await res.json();
+              if (hold.status === 'PENDING') {
+                const diff = typeof hold.timeLeft === 'number'
+                  ? hold.timeLeft
+                  : Math.max(0, Math.floor((new Date(hold.expiresAt).getTime() - Date.now()) / 1000));
+                
+                if (diff > 0) {
+                  hold.timeLeft = diff;
+                  holdsDetails.push(hold);
+                  validIds.push(id);
+                }
+              }
+            } else {
+              // Keep the reservation in localStorage unless it's explicitly deleted (404) or gone (410)
+              if (res.status !== 404 && res.status !== 410) {
+                validIds.push(id);
+              }
+            }
+          } catch (e) {
+            console.error(`Error syncing hold ${id}:`, e);
+            // On fetch exception (network drop/server restart), retain the ID
+            validIds.push(id);
+          }
+        })
+      );
+
+      setActiveHolds(holdsDetails);
+      localStorage.setItem('allo_reservations', JSON.stringify(validIds));
+    } catch (e) {
+      console.error('Failed to parse active holds:', e);
+    }
+  };
+
+  const loadData = async () => {
+    await fetchProducts();
+    await syncHolds();
+  };
+
   useEffect(() => {
-    fetchProducts();
+    loadData();
+    // Poll to keep counts accurate
+    const interval = setInterval(() => {
+      fetchProducts(true);
+    }, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Expiration countdown ticker
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setActiveHolds((prevHolds) => {
+        const updated = prevHolds
+          .map((h) => {
+            if (h.timeLeft && h.timeLeft > 0) {
+              return { ...h, timeLeft: h.timeLeft - 1 };
+            }
+            return h;
+          })
+          .filter((h) => h.timeLeft && h.timeLeft > 0);
+
+        const activeIds = updated.map((u) => u.id);
+        localStorage.setItem('allo_reservations', JSON.stringify(activeIds));
+        return updated;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
   }, []);
 
   const handleReserve = async (productId: string, warehouseId: string) => {
@@ -67,12 +166,18 @@ export default function Home() {
       const data = await res.json();
 
       if (res.status === 201) {
+        // Add to local holds tracking
+        const storedIdsRaw = localStorage.getItem('allo_reservations');
+        const ids: string[] = storedIdsRaw ? JSON.parse(storedIdsRaw) : [];
+        ids.push(data.id);
+        localStorage.setItem('allo_reservations', JSON.stringify(ids));
+
         // Redirect directly to checkout
         router.push(`/checkout/${data.id}`);
       } else if (res.status === 409) {
         // Concurrency error
         setErrorMsg(`Allocation Conflict (409): ${data.error || 'The item was reserved by another shopper.'}`);
-        await fetchProducts();
+        await fetchProducts(true);
       } else {
         setErrorMsg(data.error || 'Failed to complete hold.');
       }
@@ -80,6 +185,32 @@ export default function Home() {
       setErrorMsg('Network error. Failed to connect to server.');
     } finally {
       setReservingKey(null);
+    }
+  };
+
+  // Release/Cancel hold early from sidebar
+  const handleRelease = async (id: string) => {
+    setErrorMsg(null);
+    try {
+      const res = await fetch(`/api/reservations/${id}/release`, {
+        method: 'POST',
+      });
+
+      if (res.ok) {
+        // Remove from list and localStorage
+        setActiveHolds((prev) => prev.filter((h) => h.id !== id));
+        const storedIdsRaw = localStorage.getItem('allo_reservations');
+        if (storedIdsRaw) {
+          const ids: string[] = JSON.parse(storedIdsRaw);
+          localStorage.setItem('allo_reservations', JSON.stringify(ids.filter((x) => x !== id)));
+        }
+        await fetchProducts(true);
+      } else {
+        const data = await res.json();
+        setErrorMsg(data.error || 'Could not cancel reservation.');
+      }
+    } catch (err) {
+      setErrorMsg('Failed to connect to server.');
     }
   };
 
@@ -97,27 +228,97 @@ export default function Home() {
     <div className="min-h-screen bg-zinc-950 text-zinc-50 font-sans flex flex-col md:flex-row">
       
       {/* 1. Left Sidebar Shell */}
-      <aside className="w-full md:w-64 border-b md:border-b-0 md:border-r border-zinc-900 bg-zinc-950 p-6 flex flex-col gap-8 shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="bg-violet-600 p-2 rounded-xl text-white">
-            <Layers className="w-5 h-5" />
+      <aside className="w-full md:w-64 border-b md:border-b-0 md:border-r border-zinc-900 bg-zinc-950 p-6 flex flex-col gap-8 shrink-0 justify-between">
+        <div className="space-y-8">
+          <div className="flex items-center gap-3">
+            <div className="bg-violet-600 p-2 rounded-xl text-white">
+              <Layers className="w-5 h-5" />
+            </div>
+            <div>
+              <h1 className="font-extrabold text-sm tracking-wider uppercase text-white">
+                Allo Platform
+              </h1>
+              <p className="text-[9px] text-zinc-500 font-mono tracking-wider">
+                Inventory Manager
+              </p>
+            </div>
           </div>
-          <div>
-            <h1 className="font-extrabold text-sm tracking-wider uppercase text-white">
-              Allo Platform
-            </h1>
-            <p className="text-[9px] text-zinc-500 font-mono tracking-wider">
-              Inventory Manager
-            </p>
+
+          <nav className="flex flex-col gap-1 w-full text-xs">
+            <a className="flex items-center gap-2.5 px-4 py-3 rounded-xl bg-zinc-900 text-white font-bold w-full transition-colors">
+              <ShoppingBag className="w-4 h-4 text-violet-400" />
+              <span>Products Catalog</span>
+            </a>
+          </nav>
+
+          {/* Active Holds list directly in sidebar for cancellation */}
+          <div className="border-t border-zinc-900 pt-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <Clock className="w-3.5 h-3.5 text-zinc-500" />
+              <h3 className="text-[10px] font-mono tracking-widest text-zinc-500 uppercase font-bold">
+                Active Holds
+              </h3>
+            </div>
+            
+            {activeHolds.length === 0 ? (
+              <p className="text-[10px] text-zinc-600 font-medium leading-relaxed">
+                No active reservations. Items reserved will appear here.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {activeHolds.map((hold) => {
+                  const min = Math.floor((hold.timeLeft || 0) / 60);
+                  const sec = (hold.timeLeft || 0) % 60;
+                  
+                  return (
+                    <div 
+                      key={hold.id} 
+                      className="p-3 bg-zinc-900/30 border border-zinc-900 rounded-2xl flex items-center justify-between gap-2 text-xs"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[10px] font-bold text-zinc-200 truncate leading-tight">
+                          {hold.product.name}
+                        </p>
+                        <p className="text-[9px] text-zinc-500 truncate mt-0.5">
+                          {hold.warehouse.name}
+                        </p>
+                        <div className="flex items-center gap-1 mt-1 font-mono text-[9px] text-violet-400 font-bold">
+                          <Clock className="w-2.5 h-2.5" />
+                          <span>
+                            {String(min).padStart(2, '0')}:{String(sec).padStart(2, '0')}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Clickable Action Icons */}
+                      <div className="flex gap-1.5 shrink-0">
+                        <Link 
+                          href={`/checkout/${hold.id}`} 
+                          className="p-1.5 bg-emerald-950/40 border border-emerald-900/30 hover:bg-emerald-900/30 text-emerald-400 rounded-lg transition-colors"
+                          title="Checkout"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" />
+                          </svg>
+                        </Link>
+                        
+                        <button 
+                          onClick={() => handleRelease(hold.id)} 
+                          className="p-1.5 bg-red-950/40 border border-red-900/30 hover:bg-red-900/30 text-red-400 rounded-lg transition-colors"
+                          title="Cancel Hold"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
-
-        <nav className="flex flex-row md:flex-col gap-1 w-full text-xs">
-          <a className="flex items-center gap-2.5 px-4 py-3 rounded-xl bg-zinc-900 text-white font-bold w-full transition-colors">
-            <ShoppingBag className="w-4 h-4 text-violet-400" />
-            <span>Products Catalog</span>
-          </a>
-        </nav>
       </aside>
 
       {/* 2. Main Content Frame */}

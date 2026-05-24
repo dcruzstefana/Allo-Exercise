@@ -43,7 +43,11 @@ export async function GET(request: NextRequest, context: RouteContext) {
       );
     }
 
-    return NextResponse.json(reservation);
+    const timeLeft = Math.max(0, Math.floor((reservation.expiresAt.getTime() - Date.now()) / 1000));
+    return NextResponse.json({
+      ...reservation,
+      timeLeft,
+    });
   } catch (error) {
     console.error('[API Reservation GET Error]:', error);
     return NextResponse.json(

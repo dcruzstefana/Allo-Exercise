@@ -98,10 +98,14 @@ export async function POST(request: NextRequest) {
         },
       });
 
+      const timeLeft = Math.max(0, Math.floor((reservation.expiresAt.getTime() - Date.now()) / 1000));
       return {
         success: true,
         status: 201,
-        payload: reservation,
+        payload: {
+          ...reservation,
+          timeLeft,
+        },
       };
     });
 

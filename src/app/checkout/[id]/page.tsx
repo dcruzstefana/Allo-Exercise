@@ -56,9 +56,9 @@ export default function CheckoutPage({ params }: PageProps) {
       setStatusState(data.status);
 
       if (data.status === 'PENDING') {
-        const expiresTime = new Date(data.expiresAt).getTime();
-        const now = Date.now();
-        const diff = Math.max(0, Math.floor((expiresTime - now) / 1000));
+        const diff = typeof (data as any).timeLeft === 'number'
+          ? (data as any).timeLeft
+          : Math.max(0, Math.floor((new Date(data.expiresAt).getTime() - Date.now()) / 1000));
         
         if (diff <= 0) {
           setStatusState('EXPIRED');
@@ -116,8 +116,9 @@ export default function CheckoutPage({ params }: PageProps) {
       } else {
         setErrorMsg(data.error || 'Failed to confirm purchase.');
       }
-    } catch (err) {
-      setErrorMsg('Network error. Failed to confirm purchase.');
+    } catch (err: any) {
+      console.error("Confirm purchase failed:", err);
+      setErrorMsg(`Network error: ${err.message || 'Failed to confirm purchase.'}`);
     } finally {
       setLoading(false);
     }
@@ -141,8 +142,9 @@ export default function CheckoutPage({ params }: PageProps) {
       } else {
         setErrorMsg(data.error || 'Failed to cancel reservation.');
       }
-    } catch (err) {
-      setErrorMsg('Network error. Failed to cancel reservation.');
+    } catch (err: any) {
+      console.error("Cancel reservation failed:", err);
+      setErrorMsg(`Network error: ${err.message || 'Failed to cancel reservation.'}`);
     } finally {
       setLoading(false);
     }
