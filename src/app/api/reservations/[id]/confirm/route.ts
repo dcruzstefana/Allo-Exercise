@@ -127,6 +127,9 @@ export async function POST(request: NextRequest, context: RouteContext) {
         status: 200,
         payload: { message: 'Reservation confirmed and stock decremented.', reservation: confirmedReservation },
       };
+    }, {
+      maxWait: 15000,
+      timeout: 30000,
     });
 
     // 3. Save and return response

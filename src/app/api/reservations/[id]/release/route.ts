@@ -79,6 +79,9 @@ export async function POST(request: NextRequest, context: RouteContext) {
         status: 200,
         payload: { message: 'Reservation released successfully.', reservation: releasedReservation },
       };
+    }, {
+      maxWait: 15000,
+      timeout: 30000,
     });
 
     return NextResponse.json(result.payload, { status: result.status });

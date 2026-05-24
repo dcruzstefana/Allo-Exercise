@@ -107,6 +107,9 @@ export async function POST(request: NextRequest) {
           timeLeft,
         },
       };
+    }, {
+      maxWait: 15000,
+      timeout: 30000,
     });
 
     // 5. Save and return the response
