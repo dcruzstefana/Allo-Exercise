@@ -2,6 +2,8 @@
 
 This is a Next.js (App Router) project that implements an inventory reservation system to handle high-concurrency checkout race conditions for multi-warehouse retail brands.
 
+🔗 **Live Demo:** [https://allo-exercise-dls3tsxl2-stefana-dcruz-s-projects.vercel.app](https://allo-exercise-dls3tsxl2-stefana-dcruz-s-projects.vercel.app/)
+
 ## The Challenge
 When a shopper goes to checkout, the payment process takes a few minutes. 
 - If we only decrement inventory after successful payment, two shoppers might pay for the same last unit. One gets a refund (bad experience) and ops has to clean up the data.
